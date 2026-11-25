@@ -1848,15 +1848,19 @@ async function login(name, pin, cls){
     if(!rec.pinHash){ rec.pinHash=ph; }   // thầy đã đặt lại mật khẩu: mật khẩu mới là mật khẩu vừa nhập
     else if(rec.pinHash!==ph) throw new Error('Sai mật khẩu cho tên "'+(rec.name||name)+'". Nếu là tên trùng với bạn khác, hãy thêm họ hoặc lớp vào tên. Quên mật khẩu thì nhờ thầy đặt lại.');
   } else {
-    if(net.on && !(cls||'').trim()) throw new Error('Lần đầu đăng kí cần ghi lớp (ví dụ 8A) để thầy phê duyệt.');
-    created=true; rec={name, cls:(cls||'').trim().slice(0,12), pinHash:ph, avatar:S.avatar, progress:{school:false, done:0, best:0}, created:Date.now(), status: net.on ? 'pending' : 'approved'};
+    if(net.on && !(cls||'').trim()) throw new Error('Lần đầu đăng kí cần ghi lớp (ví dụ 8A).');
+    created=true; rec={name, cls:(cls||'').trim().slice(0,12), pinHash:ph, avatar:S.avatar, progress:{school:false, done:0, best:0}, created:Date.now(), status:'approved'};
   }
-  rec.name=name; rec.avatar=rec.avatar||S.avatar; rec.progress=Object.assign({school:false, done:0, best:0}, rec.progress||{}); rec.status=rec.status||(net.on?'pending':'approved');
+  rec.name=name; rec.avatar=rec.avatar||S.avatar; rec.progress=Object.assign({school:false, done:0, best:0}, rec.progress||{}); rec.status=rec.status||'approved';
   if(net.on && net.uid) rec.lastUid=net.uid;
   ACCT={key, pinHash:ph, rec, created}; S.name=name; S.avatar=rec.avatar; saveAvatar(S.avatar);
-  await acctSave(); return rec;
+  // Tài khoản mới vào chơi được ngay. Nếu Rules cũ trên Firebase còn bắt trạng thái 'pending' thì lưu 'pending',
+  // game vẫn cho chơi vì chỉ trạng thái 'rejected' mới chặn (xem acctStatus).
+  try{ await acctSave(); }
+  catch(e){ if(created && rec.status==='approved'){ rec.status='pending'; await acctSave(); } else throw e; }
+  return rec;
 }
-function acctStatus(){ return ACCT ? (ACCT.rec.status||'approved') : 'none'; }
+function acctStatus(){ if(!ACCT) return 'none'; return ACCT.rec.status==='rejected' ? 'rejected' : 'approved'; }
 async function acctSave(){ if(!ACCT) return; ACCT.rec.avatar=S.avatar; ACCT.rec.pinHash=ACCT.pinHash; ACCT.rec.updated=Date.now();
   if(net.on){ try{ await net.db.ref('accounts/'+ACCT.key).set(ACCT.rec); }catch(e){ console.warn('acctSave', e); if(ACCT.created) throw new Error('Không lưu được tài khoản ('+(e.code||e.message)+'). Thầy kiểm tra lại Rules trong Firebase.'); } } else saveLocalAcct(ACCT.key, ACCT.rec); }
 function acctProgress(patch){ if(!ACCT) return; Object.assign(ACCT.rec.progress, patch); acctSave(); }
@@ -1976,10 +1980,9 @@ $('socialExit').addEventListener('click', exitSocial);
 $('socialChat').addEventListener('click', openChat);
 async function refreshAcct(){ if(!ACCT || !net.on) return; try{ const r=(await net.db.ref('accounts/'+ACCT.key).once('value')).val(); if(r){ ACCT.rec=Object.assign(ACCT.rec, r); } }catch(e){} }
 function pendingScreen(){
-  const st=acctStatus();
   ov.className='overlay'; ov.hidden=false;
-  ov.innerHTML=`<div class="box"><h2>${st==='rejected' ? 'Tài khoản chưa được chấp nhận' : 'Đang chờ thầy phê duyệt'}</h2>
-    <p>${st==='rejected' ? 'Thầy đã từ chối tài khoản <b>'+esc(ACCT.rec.name)+'</b>. Hãy gặp thầy để được hướng dẫn.' : 'Tài khoản <b>'+esc(ACCT.rec.name)+'</b> (lớp '+esc(ACCT.rec.cls||'?')+') đã đăng kí thành công và đang chờ thầy phê duyệt. Khi được duyệt, bạn đăng nhập lại là chơi được.'}</p>
+  ov.innerHTML=`<div class="box"><h2>Tài khoản đang bị chặn</h2>
+    <p>Tài khoản <b>${esc(ACCT.rec.name)}</b> đã bị thầy chặn nên tạm thời không vào chơi được. Hãy gặp thầy để được hướng dẫn.</p>
     <div class="btns"><button class="primary" id="recheck">Kiểm tra lại</button><button class="ghost" id="goFree">👀 Chế độ xem</button><button class="ghost" id="logout">Đổi tài khoản</button></div></div>`;
   $('recheck').addEventListener('click', async ()=>{ $('recheck').textContent='Đang kiểm tra...'; await refreshAcct(); menuScreen(); });
   $('goFree').addEventListener('click',()=>{ ov.hidden=true; startFree(); });
@@ -2004,7 +2007,7 @@ function menuScreen(){
   $('goFree').addEventListener('click',()=>{ ov.hidden=true; startFree(); });
   $('logout').addEventListener('click',()=>{ ACCT=null; startScreen(); });
 }
-// ---------- Quản trị (giáo viên): đăng nhập email/mật khẩu Firebase, duyệt tài khoản ----------
+// ---------- Quản trị (giáo viên): đăng nhập email/mật khẩu Firebase, quản lí tài khoản ----------
 let ADMIN=null;
 function adminLogin(){
   ov.className='overlay'; ov.hidden=false;
@@ -2024,20 +2027,20 @@ const fmtDate=t=>{ if(!t) return ''; const d=new Date(t); return `${String(d.get
 async function adminScreen(filter){
   ov.className='overlay'; ov.hidden=false; ov.innerHTML=`<div class="box"><h2>🔑 Quản trị</h2><p>Đang tải danh sách tài khoản...</p></div>`;
   let accts={}; try{ accts=(await net.db.ref('accounts').once('value')).val()||{}; }catch(e){ ov.innerHTML=`<div class="box"><h2>🔑 Quản trị</h2><p class="err">Không đọc được dữ liệu: ${esc(e.code||e.message)}</p><div class="btns"><button class="ghost" id="aOut">Thoát</button></div></div>`; $('aOut').addEventListener('click', adminLogout); return; }
-  const list=Object.entries(accts).map(([key,r])=>Object.assign({key}, r)).sort((a,b)=>(a.status==='pending'?0:1)-(b.status==='pending'?0:1) || (b.created||0)-(a.created||0));
-  const counts={pending:0, approved:0, rejected:0}; list.forEach(r=>{ counts[r.status||'approved']=(counts[r.status||'approved']||0)+1; });
-  filter=filter||'pending'; const shown=list.filter(r=>filter==='all' || (r.status||'approved')===filter);
-  const row=r=>`<tr><td><b>${esc(r.name||r.key)}</b><br><small style="color:#5a6475">${esc(r.cls||'')} · ${fmtDate(r.created)}</small></td><td>${r.status==='pending'?'⏳ chờ duyệt':r.status==='rejected'?'⛔ từ chối':'✅ đã duyệt'}${r.pinHash?'':'<br><small>(chờ đặt mật khẩu mới)</small>'}</td><td class="r">${(r.progress&&r.progress.done)||0} / ${(r.progress&&r.progress.best)||0}${r.progress&&r.progress.school?'<br><small>đã tới trường</small>':''}</td>
-    <td style="white-space:nowrap">${r.status!=='approved'?`<button data-act="approve" data-k="${r.key}">Duyệt</button> `:''}${r.status!=='rejected'?`<button data-act="reject" data-k="${r.key}" class="ghost">Từ chối</button> `:''}<button data-act="resetpin" data-k="${r.key}" class="ghost" title="Xoá mật khẩu cũ, học sinh tự đặt lại khi đăng nhập">Đặt lại MK</button> <button data-act="delete" data-k="${r.key}" class="ghost" style="color:#c81e3a">Xoá</button></td></tr>`;
+  const list=Object.entries(accts).map(([key,r])=>Object.assign({key}, r)).sort((a,b)=>(b.created||0)-(a.created||0));
+  const blocked=list.filter(r=>r.status==='rejected').length, playing=list.length-blocked;
+  filter=filter||'all'; const shown=filter==='rejected' ? list.filter(r=>r.status==='rejected') : filter==='playing' ? list.filter(r=>r.status!=='rejected') : list;
+  const row=r=>`<tr><td><b>${esc(r.name||r.key)}</b><br><small style="color:#5a6475">${esc(r.cls||'')} · ${fmtDate(r.created)}</small></td><td>${r.status==='rejected'?'⛔ bị chặn':'✅ chơi được'}${r.pinHash?'':'<br><small>(chờ đặt mật khẩu mới)</small>'}</td><td class="r">${(r.progress&&r.progress.done)||0} / ${(r.progress&&r.progress.best)||0}${r.progress&&r.progress.school?'<br><small>đã tới trường</small>':''}</td>
+    <td style="white-space:nowrap">${r.status==='rejected'?`<button data-act="approve" data-k="${r.key}">Bỏ chặn</button> `:`<button data-act="reject" data-k="${r.key}" class="ghost">Chặn</button> `}<button data-act="resetpin" data-k="${r.key}" class="ghost" title="Xoá mật khẩu cũ, học sinh tự đặt lại khi đăng nhập">Đặt lại MK</button> <button data-act="delete" data-k="${r.key}" class="ghost" style="color:#c81e3a">Xoá</button></td></tr>`;
   ov.innerHTML=`<div class="box" style="max-width:860px"><h2>🔑 Quản trị · ${esc(ADMIN.email||'')}</h2>
-    <div class="stats"><span><b>${counts.pending}</b>chờ duyệt</span><span><b>${counts.approved}</b>đã duyệt</span><span><b>${counts.rejected}</b>từ chối</span><span><b>${list.length}</b>tổng</span></div>
-    <div class="btns row" style="margin:4px 0">${[['pending','Chờ duyệt'],['approved','Đã duyệt'],['rejected','Từ chối'],['all','Tất cả']].map(([k,l])=>`<button data-f="${k}" class="${filter===k?'primary':'ghost'}">${l}</button>`).join('')}</div>
+    <div class="stats"><span><b>${playing}</b>đang chơi được</span><span><b>${blocked}</b>bị chặn</span><span><b>${list.length}</b>tổng tài khoản</span></div>
+    <div class="btns row" style="margin:4px 0">${[['all','Tất cả'],['playing','Đang chơi được'],['rejected','Bị chặn']].map(([k,l])=>`<button data-f="${k}" class="${filter===k?'primary':'ghost'}">${l}</button>`).join('')}</div>
     <div style="overflow-x:auto"><table class="lb"><tr><th>Học sinh</th><th>Trạng thái</th><th class="r">Hoàn thành / Điểm cao</th><th>Thao tác</th></tr>${shown.map(row).join('')||'<tr><td colspan="4" style="color:#5a6475">Không có tài khoản nào.</td></tr>'}</table></div>
     <div class="btns row"><button class="ghost" id="aChat">Xoá toàn bộ chat</button><button class="ghost" id="aScores">Xoá bảng xếp hạng chung</button><button class="ghost" id="aRefresh">Tải lại</button><button class="primary" id="aOut" style="margin-left:auto">Đăng xuất quản trị</button></div></div>`;
   ov.querySelectorAll('[data-f]').forEach(b=>b.addEventListener('click',()=>adminScreen(b.dataset.f)));
   ov.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click', async ()=>{ const k=b.dataset.k, a=b.dataset.act, r=accts[k]; const ref=net.db.ref('accounts/'+k); b.disabled=true;
     try{ if(a==='approve') await ref.update({status:'approved', approvedAt:Date.now()});
-      else if(a==='reject') await ref.update({status:'rejected'});
+      else if(a==='reject'){ if(confirm('Chặn tài khoản "'+(r.name||k)+'"? Em này sẽ không vào chơi được nữa.')) await ref.update({status:'rejected'}); }
       else if(a==='resetpin'){ if(confirm('Xoá mật khẩu của "'+(r.name||k)+'"? Học sinh sẽ tự đặt mật khẩu mới ở lần đăng nhập tới.')) await ref.child('pinHash').remove(); }
       else if(a==='delete'){ if(confirm('Xoá hẳn tài khoản "'+(r.name||k)+'" và tiến độ của em đó?')) await ref.remove(); }
     }catch(e){ alert('Lỗi: '+(e.code||e.message)); }
