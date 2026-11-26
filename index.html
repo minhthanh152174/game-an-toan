@@ -140,7 +140,7 @@ body{background:var(--ground);color:#e8eef3;font-family:var(--body);font-size:15
       <div class="toast" id="toast" hidden></div>
       <div class="freehud" id="freehud" hidden></div>
       <div class="online" id="online" hidden></div>
-      <div class="social" id="socialHud" hidden><button id="socialChat">💬 Chat (T)</button><button id="socialExit">⏏ Về màn hình chính</button></div>
+      <div class="social" id="socialHud" hidden><button id="socialChat">💬 Chat (T)</button><button id="socialWave">👋 Chào (G)</button><button id="socialShake">🤝 Bắt tay (H)</button><button id="socialExit">⏏ Về màn hình chính</button></div>
       <div class="bubble" id="bubble" hidden></div>
     </div>
     <div class="touch" id="touch" hidden>
@@ -1886,6 +1886,45 @@ function wireAvatar(root){ const cv=root.querySelector('#avCv'); drawAvatar(cv,S
 
 // ---------- Lớp học trực tuyến: nhiều người chơi gặp nhau ở trường (Firebase Realtime Database) ----------
 function isSchool(x,z){ return z>113 || x>250; }
+/* ===== Động tác chào và bắt tay =====
+   Người chơi nhìn góc thứ nhất nên không thấy thân mình: dựng một bàn tay gắn vào
+   camera để thấy mình đang vẫy / chìa tay, còn các bạn khác thấy cả cánh tay nhân vật. */
+const GESTURE_MS = 2600;
+const myHand = new THREE.Group();
+{ const skin = L(0xf0c9a4);
+  const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.055,0.07,0.34,8), skin); fore.rotation.x = Math.PI/2; fore.position.z = 0.17; myHand.add(fore);
+  const palm = new THREE.Mesh(new THREE.SphereGeometry(0.085,10,8), skin); palm.scale.set(1,1.15,0.6); myHand.add(palm);
+  myHand.visible = false; camera.add(myHand); }
+
+function nearestPeer(){ let best=null, bd=1e9;
+  for(const uid in net.peers){ const pr=net.peers[uid]; if(!pr.person) continue;
+    const g=pr.person.g, d=Math.hypot(g.position.x-player.x, g.position.z-player.z); if(d<bd){ bd=d; best=pr; } }
+  return bd<7 ? best : null; }
+
+function doGesture(kind){
+  if(S.free || $('obj').hidden) return;
+  if(S.gesture && Date.now()-S.gesture.t0 < 700) return;          // tránh bấm liên tục
+  S.gesture = {kind, t0: Date.now()};
+  net.lastKey = '';                                               // buộc gửi ngay cho các bạn thấy
+  sfx.pick();
+  const pr = nearestPeer();
+  if(kind==='wave') toast(pr ? ('Em vẫy tay chào ' + (pr.name||'bạn') + ' 👋') : 'Em vẫy tay chào 👋');
+  else toast(pr ? ('Em chìa tay bắt tay ' + (pr.name||'bạn') + ' 🤝') : 'Em chìa tay ra — lại gần một bạn để bắt tay 🤝');
+}
+
+/* Bàn tay của mình + hiện/ẩn thanh nút khi ở trong trường */
+function updateSelfGesture(){
+  const act = S.gesture && !S.free && (Date.now()-S.gesture.t0 < GESTURE_MS);
+  if(act){ const e=(Date.now()-S.gesture.t0)/1000; myHand.visible=true;
+    if(S.gesture.kind==='wave'){ myHand.position.set(0.30,-0.18,-0.60); myHand.rotation.set(0.25,0,Math.sin(e*12)*0.5); }
+    else { myHand.position.set(0.18,-0.30,-0.54+Math.sin(e*9)*0.05); myHand.rotation.set(-0.95,0,0.25); } }
+  else myHand.visible=false;
+  const show = (S.phase==='social') || (net.on && !S.free && !$('obj').hidden && isSchool(player.x,player.z));
+  if($('socialHud').hidden === show) $('socialHud').hidden = !show;
+  const wantExit = S.phase==='social';
+  if($('socialExit').hidden === wantExit) $('socialExit').hidden = !wantExit;
+}
+
 const net = { on:false, uid:null, db:null, peers:{}, lastSent:0, lastFull:0, lastKey:'', ready:false, err:null,
   async init(){
     if(!FIREBASE_CONFIG){ this.err='Chưa cấu hình Firebase'; return; }
@@ -1902,9 +1941,12 @@ const net = { on:false, uid:null, db:null, peers:{}, lastSent:0, lastFull:0, las
   update(){
     if(!this.on) return; const now=performance.now(); if(now-this.lastSent<150) return; this.lastSent=now;
     const started = !$('obj').hidden && !S.free, here = started && isSchool(player.x,player.z);
-    if(here){ const key=[player.x.toFixed(1),player.z.toFixed(1),player.yaw.toFixed(1),S.name,S.phase,player.eye<1].join('|');
+    if(here){ const gs = (S.gesture && Date.now()-S.gesture.t0 < GESTURE_MS) ? S.gesture : null;
+      const key=[player.x.toFixed(1),player.z.toFixed(1),player.yaw.toFixed(1),S.name,S.phase,player.eye<1,gs?gs.kind+gs.t0:''].join('|');
       if(key!==this.lastKey || now-this.lastFull>5000){ this.lastKey=key; this.lastFull=now;
-        this.db.ref('presence/'+this.uid).set({name:S.name||'Ẩn danh', av:S.avatar, x:+player.x.toFixed(2), z:+player.z.toFixed(2), yaw:+player.yaw.toFixed(2), low:player.eye<1, t:firebase.database.ServerValue.TIMESTAMP}); } }
+        const rec={name:S.name||'Ẩn danh', av:S.avatar, x:+player.x.toFixed(2), z:+player.z.toFixed(2), yaw:+player.yaw.toFixed(2), low:player.eye<1, t:firebase.database.ServerValue.TIMESTAMP};
+        if(gs){ rec.gk=gs.kind; rec.gt=gs.t0; }
+        this.db.ref('presence/'+this.uid).set(rec); } }
     else if(this.lastKey){ this.lastKey=''; this.db.ref('presence/'+this.uid).remove(); }
   },
   onPresence(all){
@@ -1915,7 +1957,10 @@ const net = { on:false, uid:null, db:null, peers:{}, lastSent:0, lastFull:0, las
       if(pr && pr.avKey!==avKey){ scene.remove(pr.person.g); scene.remove(pr.label); pr=null; }
       if(!pr){ const person=standingPerson(p.x,p.z,p.yaw+Math.PI,{female:av.female, shirt:av.shirt, hair:av.hair, skin:av.skin, scarf:true}); const label=nameSprite(p.name||'?'); label.position.set(p.x,2.25,p.z); scene.add(label);
         pr=this.peers[uid]={person,label,avKey,name:p.name,tx:p.x,tz:p.z,tyaw:p.yaw,low:!!p.low,bubble:null,bubbleT:0}; }
-      pr.name=p.name; pr.tx=p.x; pr.tz=p.z; pr.tyaw=p.yaw; pr.low=!!p.low; pr.seen=now; }
+      pr.name=p.name; pr.tx=p.x; pr.tz=p.z; pr.tyaw=p.yaw; pr.low=!!p.low; pr.seen=now;
+      if(p.gt && p.gt!==pr.gt && Date.now()-p.gt<6000 && Math.hypot(p.x-player.x, p.z-player.z)<7)
+        toast((p.name||'Một bạn') + (p.gk==='shake' ? ' chìa tay ra bắt tay 🤝' : ' vẫy tay chào bạn 👋'));
+      pr.gk=p.gk||null; pr.gt=p.gt||0; }
     for(const uid in this.peers){ if(!all[uid] || uid===this.uid || now-(all[uid].t||0)>90000){ const pr=this.peers[uid]; scene.remove(pr.person.g); scene.remove(pr.label); if(pr.bubble) scene.remove(pr.bubble); delete this.peers[uid]; } }
     const o=$('online'); o.hidden=!(this.on && !S.free && !$('obj').hidden); o.textContent = n ? `🟢 ${n} bạn khác đang ở trường` : '🟢 Đang trực tuyến · chưa có bạn nào khác ở trường';
   },
@@ -1923,22 +1968,40 @@ const net = { on:false, uid:null, db:null, peers:{}, lastSent:0, lastFull:0, las
     for(const uid in this.peers){ const pr=this.peers[uid], g=pr.person.g; const k=Math.min(1,dt*6); const dx=pr.tx-g.position.x, dz=pr.tz-g.position.z; const moving=Math.hypot(dx,dz)>0.03;
       g.position.x+=dx*k; g.position.z+=dz*k; let dy=((pr.tyaw+Math.PI-g.rotation.y+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI; g.rotation.y+=dy*k;
       g.scale.y+=((pr.low?0.7:1)-g.scale.y)*k; g.position.y = moving ? Math.abs(Math.sin(t*8))*0.04 : 0;
-      pr.person.armL.rotation.x = moving ? Math.sin(t*8)*0.6 : 0; pr.person.armR.rotation.x = moving ? -Math.sin(t*8)*0.6 : 0;
+      const gOn = pr.gk && (Date.now()-(pr.gt||0) < GESTURE_MS);
+      pr.person.armL.rotation.x = moving ? Math.sin(t*8)*0.6 : 0;
+      if(gOn && pr.gk==='wave') pr.person.armR.rotation.set(0, 0, 2.3+Math.sin(t*11)*0.4);        // giơ tay lên vẫy
+      else if(gOn) pr.person.armR.rotation.set(-1.35+Math.sin(t*9)*0.18, 0, 0.3);                 // chìa tay ra trước, lắc nhẹ
+      else pr.person.armR.rotation.set(moving ? -Math.sin(t*8)*0.6 : 0, 0, 0);
       pr.label.position.set(g.position.x, 2.25*g.scale.y, g.position.z);
-      if(pr.bubble){ pr.bubble.position.set(g.position.x, 2.65*g.scale.y, g.position.z); pr.bubbleT-=dt; if(pr.bubbleT<=0){ scene.remove(pr.bubble); pr.bubble=null; } } }
+      if(pr.bubble){ pr.bubble.position.set(g.position.x, 2.82*g.scale.y, g.position.z); pr.bubbleT-=dt; if(pr.bubbleT<=0){ scene.remove(pr.bubble); pr.bubble=null; } } }
   },
   onChat(key, m){ if(!m || !m.text) return; const mine=m.uid===this.uid; chatAdd(m.name||'?', m.text, mine);
-    if(!mine){ const pr=this.peers[m.uid]; if(pr){ if(pr.bubble) scene.remove(pr.bubble); pr.bubble=nameSprite(m.text.slice(0,60), true); pr.bubbleT=6; scene.add(pr.bubble); }
-      if(Date.now()-(m.t||0)<15000){ showBubble(m.name, m.text); if($('chatTts').checked) speak((m.name||'')+' nói: '+m.text, 'ban'); } } },
+    if(mine) return;
+    if(Date.now()-(m.t||0) >= 15000) return;          // tin cũ Firebase phát lại lúc vừa vào: chỉ ghi vào khung chat
+    const pr=this.peers[m.uid];
+    if(pr){ if(pr.bubble) scene.remove(pr.bubble); pr.bubble=nameSprite(m.text.slice(0,90), true); pr.bubbleT=7; scene.add(pr.bubble); }
+    showBubble(m.name, m.text); if($('chatTts').checked) speak((m.name||'')+' nói: '+m.text, 'ban'); },
   send(text){ if(!this.on) return; this.db.ref('chat').push({uid:this.uid, name:S.name||'Ẩn danh', text:text.slice(0,200), t:firebase.database.ServerValue.TIMESTAMP}); },
   submitScore(r){ if(!this.on) return; this.db.ref('scores').push(Object.assign({uid:this.uid, t:firebase.database.ServerValue.TIMESTAMP}, r)); },
   async topScores(){ if(!this.on) return null; try{ const snap=await this.db.ref('scores').orderByChild('score').limitToLast(60).once('value'); const arr=[]; snap.forEach(c=>{ arr.push(Object.assign({id:c.key}, c.val())); }); arr.sort((a,b)=>b.score-a.score || a.wrong-b.wrong || (a.t||0)-(b.t||0)); return arr; }catch(e){ console.warn(e); return null; } }
 };
-function nameSprite(text, bubble){ const c=document.createElement('canvas'); c.width=512; c.height=bubble?160:96; const g=c.getContext('2d'); g.font=`bold ${bubble?30:40}px "Be Vietnam Pro", sans-serif`; g.textAlign='center'; g.textBaseline='middle';
-  const w=Math.min(500, g.measureText(text).width+40); g.fillStyle= bubble ? 'rgba(255,255,255,.95)' : 'rgba(0,0,0,.6)'; roundRect(g,(512-w)/2,bubble?20:12,w,bubble?120:72,18); g.fill();
-  if(bubble){ g.beginPath(); g.moveTo(240,138); g.lineTo(272,138); g.lineTo(256,158); g.fill(); }
-  g.fillStyle= bubble ? '#17202e' : '#fff'; g.fillText(text,256,bubble?80:48);
-  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c), transparent:true, depthTest:false})); sp.scale.set(bubble?2.0:1.5, bubble?0.62:0.28, 1); return sp; }
+function nameSprite(text, bubble){
+  const c=document.createElement('canvas'); c.width=512; c.height=bubble?200:96;
+  const g=c.getContext('2d'); g.font=`bold ${bubble?28:40}px "Be Vietnam Pro", sans-serif`; g.textAlign='center'; g.textBaseline='middle';
+  if(!bubble){ const w=Math.min(500, g.measureText(text).width+40); g.fillStyle='rgba(0,0,0,.6)'; roundRect(g,(512-w)/2,12,w,72,18); g.fill(); g.fillStyle='#fff'; g.fillText(text,256,48); }
+  else {
+    const maxW=430, words=String(text).split(/\s+/), lines=[]; let cur='';
+    for(const w of words){ const tryL = cur ? cur+' '+w : w; if(g.measureText(tryL).width<=maxW || !cur) cur=tryL; else { lines.push(cur); cur=w; } }
+    if(cur) lines.push(cur);
+    if(lines.length>3){ lines.length=3; lines[2]=lines[2].slice(0,-1)+'…'; }
+    const lh=34, bw=Math.min(480, Math.max.apply(null, lines.map(l=>g.measureText(l).width))+40), bh=lines.length*lh+26, y0=14;
+    g.fillStyle='rgba(255,255,255,.96)'; roundRect(g,(512-bw)/2,y0,bw,bh,18); g.fill();
+    g.beginPath(); g.moveTo(240,y0+bh-1); g.lineTo(272,y0+bh-1); g.lineTo(256,y0+bh+22); g.fill();
+    g.fillStyle='#17202e'; lines.forEach((l,i)=>g.fillText(l,256,y0+13+lh/2+i*lh));
+  }
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c), transparent:true, depthTest:false}));
+  sp.scale.set(bubble?2.2:1.5, bubble?0.86:0.28, 1); return sp; }
 function chatAdd(name, text, mine){ const log=$('chatLog'); const d=document.createElement('div'); if(mine) d.className='me'; const b=document.createElement('b'); b.textContent=name+': '; d.appendChild(b); d.appendChild(document.createTextNode(text)); log.appendChild(d); while(log.children.length>60) log.removeChild(log.firstChild); log.scrollTop=log.scrollHeight; }
 function chatSys(text){ const log=$('chatLog'); const d=document.createElement('div'); d.className='sys'; d.textContent=text; log.appendChild(d); log.scrollTop=log.scrollHeight; }
 let bubbleT=null;
@@ -1979,6 +2042,8 @@ function startSocial(){
 function exitSocial(){ unlock(); paused=true; $('socialHud').hidden=true; $('obj').hidden=true; $('cross').hidden=true; $('touch').hidden=true; $('online').hidden=true; if(net.on) net.db.ref('presence/'+net.uid).remove(); net.lastKey=''; resetStory(true); menuScreen(); }
 $('socialExit').addEventListener('click', exitSocial);
 $('socialChat').addEventListener('click', openChat);
+$('socialWave').addEventListener('click', ()=>doGesture('wave'));
+$('socialShake').addEventListener('click', ()=>doGesture('shake'));
 async function refreshAcct(){ if(!ACCT || !net.on) return; try{ const r=(await net.db.ref('accounts/'+ACCT.key).once('value')).val(); if(r){ ACCT.rec=Object.assign(ACCT.rec, r); } }catch(e){} }
 function pendingScreen(){
   ov.className='overlay'; ov.hidden=false;
@@ -2093,6 +2158,8 @@ addEventListener('keydown',e=>{
   keys[e.code]=true;
   if(e.code==='KeyE' && !paused) tryAct();
   if(e.code==='KeyT' && !paused && !S.free){ e.preventDefault(); openChat(); }
+  if(e.code==='KeyG' && !paused && !S.free){ e.preventDefault(); doGesture('wave'); }
+  if(e.code==='KeyH' && !paused && !S.free){ e.preventDefault(); doGesture('shake'); }
 });
 addEventListener('keyup',e=>keys[e.code]=false);
 addEventListener('blur',()=>keys={});
@@ -2343,7 +2410,7 @@ function loop(){
   if(labSmoke.visible && !S.free && labSmoke.material.opacity<0.65) labSmoke.material.opacity=Math.min(0.65, labSmoke.material.opacity+dt*0.12);
   if(labFire2.g.visible){ labPuffs.forEach((p,i)=>{ const m=p.m; if(!m.visible || m.position.y>3.05){ m.visible=true; m.position.set(CH.X-4.1+(Math.random()-0.5)*0.8, 1.2+Math.random()*0.5, CH.Z+2.5+(Math.random()-0.5)*1.2); m.scale.setScalar(0.6); m.material.opacity=0.7; }
     m.position.y+=dt*(0.5+i*0.03); m.position.x+=dt*0.25; m.scale.multiplyScalar(1+dt*0.6); m.material.opacity=Math.max(0.15,m.material.opacity-dt*0.12); }); }
-  updateStudents(dt,t); net.update(); net.tick(dt,t);
+  updateStudents(dt,t); updateSelfGesture(); net.update(); net.tick(dt,t);
   if(S.storm && !paused && Math.random()<dt*0.25) lightning();
   if(S.ballInPond && fieldBall){ const b=fieldBall.position; b.x+=(PF.pondX-b.x)*Math.min(1,dt*2.5); b.z+=(PF.pondZ-b.z)*Math.min(1,dt*2.5); b.y=0.11+Math.max(0,Math.sin(Math.min(1,Math.hypot(PF.pondX-b.x,PF.pondZ-b.z)/10)*Math.PI))*2.5; }
   labMate.armR.rotation.z = (S.phase==='labFire1'||S.phase==='labBig') ? 2.4+Math.sin(t*9)*0.4 : 0.1; labMate.armL.rotation.z = -labMate.armR.rotation.z;
