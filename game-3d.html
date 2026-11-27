@@ -63,6 +63,7 @@ body{background:var(--ground);color:#e8eef3;font-family:var(--body);font-size:15
 .mist{margin:0;padding-left:18px;font-size:.88rem;color:#7a2a2a}
 .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.95rem}
 .stats b{font-family:var(--display);font-size:1.4rem;display:block;line-height:1}
+.stats small{display:block;font-size:.76rem;color:#5a6475;line-height:1.2}
 .box button.ghost{background:#fff;border-color:#2f7fb3;color:#1f5f8a;text-align:center}
 .toi h2{color:var(--danger);font-size:3rem}
 .fade{position:absolute;inset:0;background:#000;display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--display);font-size:1.6rem;text-align:center;padding:16px;pointer-events:auto}
@@ -1600,7 +1601,7 @@ function endSchool(){
   const {id,pos}=finishScore(); const [rk,rc]=rankOf();
   ov.className='overlay okbox'; ov.hidden=false;
   ov.innerHTML=`<div class="box"><span class="tag">🏫 Hết phần đã xây</span><h2>Kết quả của ${esc(S.name||'bạn')}</h2>
-    <div class="stats"><span><b>${S.score}</b>điểm</span><span><b>${S.right}</b>lần đúng</span><span><b>${S.wrong}</b>lần toi</span><span><b>#${pos}</b>xếp hạng</span></div>
+    <div class="stats"><span><b>${S.score}</b>điểm</span><span><b>${S.right}</b>lần đúng</span><span><b>${S.wrong}</b>lần toi</span><span id="posStat"><b>#${pos}</b>xếp hạng<small>trên máy này</small></span></div>
     <p class="rank" style="color:${rc}">Xếp loại: ${rk}${S.wrong===0?' (+20 điểm thưởng)':''}</p>
     ${S.mistakes.length?`<p style="margin:0"><b>Những lỗi cần nhớ:</b></p><ol class="mist">${S.mistakes.map(m=>`<li>${esc(m)}</li>`).join('')}</ol>`:'<p>Bạn không mắc lỗi nào. Tuyệt vời!</p>'}
     <p style="font-size:.92rem">Bạn đã đi qua ngã tư đúng luật, cứu người gặp nạn đúng cách, đến trường chào bác bảo vệ, xử lí đám cháy và thoát hiểm an toàn ở phòng thực hành Hóa học, học ở phòng thực hành Vật lí, rồi trong giờ thể dục đã không xuống ao lấy bóng, sơ cứu đúng cách bạn bị ngã và tránh sét an toàn. Tình huống ở phòng Vật lí sẽ được thêm khi có nội dung.</p>
@@ -2043,7 +2044,21 @@ function finishScore(){
   net.submitScore({name:S.name||'Ẩn danh', score:S.score, right:S.right, wrong:S.wrong, date, lid:id});
   const pos=bestPerPlayer(b).findIndex(r=>r.ids && r.ids.includes(id))+1; return {id,pos};
 }
-async function fillOnlineBoard(el, me){ if(!net.on || !el) return; el.innerHTML='<p style="color:#5a6475;font-size:.9rem">Đang tải bảng xếp hạng chung của lớp...</p>'; const b=await net.topScores(); if(!el.isConnected) return; el.innerHTML = b ? `<p style="margin:0;font-weight:600">🌐 Bảng xếp hạng chung cả lớp</p>${boardHTML(me,b)}<p style="margin:0;font-weight:600;font-size:.9rem;color:#5a6475">Trên máy này</p>` : '<p style="color:#c81e3a;font-size:.9rem">Không tải được bảng xếp hạng chung.</p>'; }
+async function fillOnlineBoard(el, me){ if(!net.on || !el) return; el.innerHTML='<p style="color:#5a6475;font-size:.9rem">Đang tải bảng xếp hạng chung của lớp...</p>'; const b=await net.topScores(); if(!el.isConnected) return;
+  el.innerHTML = b ? `<p style="margin:0;font-weight:600">🌐 Bảng xếp hạng chung cả lớp</p>${boardHTML(me,b)}<p style="margin:0;font-weight:600;font-size:.9rem;color:#5a6475">Trên máy này</p>` : '<p style="color:#c81e3a;font-size:.9rem">Không tải được bảng xếp hạng chung.</p>';
+  classRank(b, me); }
+
+/* Hạng trong cả lớp của lượt vừa chơi. Lượt vừa gửi lên có thể chưa kịp về nên ghép thêm
+   vào danh sách trước khi gom, để con số không bị sai ở lần chơi đầu tiên. */
+function classRank(b, me){
+  const el=$('posStat'); if(!el || !b || !me) return;
+  const list=b.slice();
+  if(!list.some(r=>r.lid===me || r.id===me))
+    list.push({id:me, lid:me, uid:net.uid, name:S.name||'Ẩn danh', score:S.score, right:S.right, wrong:S.wrong, t:Date.now()});
+  const g=bestPerPlayer(list), i=g.findIndex(r=>r.ids && r.ids.includes(me));
+  if(i<0) return;
+  el.innerHTML=`<b>#${i+1}</b>xếp hạng<small>cả lớp · ${g.length} bạn</small>`;
+}
 function showBoard(back){
   ov.className='overlay'; ov.hidden=false;
   ov.innerHTML=`<div class="box"><h2>🏆 Bảng xếp hạng</h2><div id="lbOnline"></div>${boardHTML(null)}<div class="btns"><button class="primary" id="lbBack">Quay lại</button><button class="ghost" id="lbClear">Xoá bảng xếp hạng</button></div></div>`;
