@@ -1984,7 +1984,7 @@ const net = { on:false, uid:null, db:null, peers:{}, lastSent:0, lastFull:0, las
     showBubble(m.name, m.text); if($('chatTts').checked) speak((m.name||'')+' nói: '+m.text, 'ban'); },
   send(text){ if(!this.on) return; this.db.ref('chat').push({uid:this.uid, name:S.name||'Ẩn danh', text:text.slice(0,200), t:firebase.database.ServerValue.TIMESTAMP}); },
   submitScore(r){ if(!this.on) return; this.db.ref('scores').push(Object.assign({uid:this.uid, t:firebase.database.ServerValue.TIMESTAMP}, r)); },
-  async topScores(){ if(!this.on) return null; try{ const snap=await this.db.ref('scores').orderByChild('score').limitToLast(60).once('value'); const arr=[]; snap.forEach(c=>{ arr.push(Object.assign({id:c.key}, c.val())); }); arr.sort((a,b)=>b.score-a.score || a.wrong-b.wrong || (a.t||0)-(b.t||0)); return arr; }catch(e){ console.warn(e); return null; } }
+  async topScores(){ if(!this.on) return null; try{ const snap=await this.db.ref('scores').orderByChild('score').limitToLast(600).once('value'); const arr=[]; snap.forEach(c=>{ arr.push(Object.assign({id:c.key}, c.val())); }); arr.sort((a,b)=>b.score-a.score || a.wrong-b.wrong || (a.t||0)-(b.t||0)); return arr; }catch(e){ console.warn(e); return null; } }
 };
 function nameSprite(text, bubble){
   const c=document.createElement('canvas'); c.width=512; c.height=bubble?200:96;
@@ -2015,8 +2015,25 @@ function updateScore(){ const el=$('score'); if(!el) return; el.innerHTML=`${S.s
 function addScore(d, right, reason){ if(S.free) return; S.score=Math.max(0, S.score+d); if(right) S.right++; else { S.wrong++; if(reason && !S.mistakes.includes(reason)) S.mistakes.push(reason); } updateScore(); }
 function rankOf(){ if(S.wrong===0) return ['Xuất sắc · Chiến sĩ an toàn','#1f8a52']; if(S.wrong<=2) return ['Giỏi','#2f7fb3']; if(S.wrong<=5) return ['Khá','#c77d10']; return ['Cần cố gắng','#c81e3a']; }
 function esc(t){ return String(t).replace(/[<&>]/g,c=>({'<':'&lt;','&':'&amp;','>':'&gt;'}[c])); }
-function boardHTML(me, b){ b = b || loadBoard(); if(!b.length) return '<p class="empty" style="color:#5a6475">Chưa có ai trong bảng xếp hạng. Hãy là người đầu tiên!</p>';
-  return `<table class="lb"><tr><th>#</th><th>Tên</th><th class="r">Điểm</th><th class="r">Đúng</th><th class="r">Sai</th><th>Ngày</th></tr>${b.slice(0,10).map((r,i)=>`<tr class="${(r.id===me||r.lid===me)?'me':''}"><td>${i+1}</td><td>${esc(r.name)}</td><td class="r">${r.score}</td><td class="r">${r.right}</td><td class="r">${r.wrong}</td><td>${r.date}</td></tr>`).join('')}</table>`; }
+/* Xếp hạng theo LƯỢT CHƠI TỐT NHẤT của mỗi người, KHÔNG cộng dồn điểm các lượt.
+   Mỗi người chỉ còn một dòng: lượt có điểm cao nhất. Chơi nhiều lần không làm tăng hạng,
+   chỉ có một lượt chơi thật tốt mới lên hạng được. */
+function bestPerPlayer(list){
+  const m=new Map();
+  for(const r of (list||[])){
+    if(!r) continue;
+    const key = r.uid || ('ten:'+String(r.name||'').trim().toLowerCase());
+    const cur = m.get(key);
+    if(!cur){ const o=Object.assign({}, r); o.tries=1; o.ids=[r.id, r.lid].filter(Boolean); m.set(key,o); continue; }
+    cur.tries++; if(r.id) cur.ids.push(r.id); if(r.lid) cur.ids.push(r.lid);
+    if(r.score>cur.score || (r.score===cur.score && r.wrong<cur.wrong)){
+      const tries=cur.tries, ids=cur.ids; Object.assign(cur, r); cur.tries=tries; cur.ids=ids; }
+  }
+  return [...m.values()].sort((a,b)=> b.score-a.score || a.wrong-b.wrong || (a.t||0)-(b.t||0));
+}
+function boardHTML(me, b){ b = bestPerPlayer(b || loadBoard()); if(!b.length) return '<p class="empty" style="color:#5a6475">Chưa có ai trong bảng xếp hạng. Hãy là người đầu tiên!</p>';
+  const mine = r => me && ((r.ids && r.ids.includes(me)) || r.id===me || r.lid===me);
+  return `<table class="lb"><tr><th>#</th><th>Tên</th><th class="r">Điểm cao nhất</th><th class="r">Đúng</th><th class="r">Sai</th><th class="r">Lượt</th><th>Ngày</th></tr>${b.slice(0,10).map((r,i)=>`<tr class="${mine(r)?'me':''}"><td>${i+1}</td><td>${esc(r.name)}</td><td class="r">${r.score}</td><td class="r">${r.right}</td><td class="r">${r.wrong}</td><td class="r">${r.tries}</td><td>${r.date}</td></tr>`).join('')}</table><p style="margin:2px 0 0;font-size:.82rem;color:#5a6475">Mỗi bạn một dòng, lấy lượt chơi có điểm cao nhất — chơi nhiều lần không cộng dồn điểm.</p>`; }
 function finishScore(){
   if(S.wrong===0){ S.score+=20; updateScore(); }
   const id=Date.now()+''+Math.random().toString(36).slice(2,6);
@@ -2024,7 +2041,7 @@ function finishScore(){
   if(ACCT) acctProgress({school:true, done:(ACCT.rec.progress.done||0)+1, best:Math.max(ACCT.rec.progress.best||0, S.score)});
   const b=loadBoard(); b.push({id, name:S.name||'Ẩn danh', score:S.score, right:S.right, wrong:S.wrong, date}); b.sort((a,c)=>c.score-a.score || a.wrong-c.wrong); saveBoard(b);
   net.submitScore({name:S.name||'Ẩn danh', score:S.score, right:S.right, wrong:S.wrong, date, lid:id});
-  const pos=b.findIndex(r=>r.id===id)+1; return {id,pos};
+  const pos=bestPerPlayer(b).findIndex(r=>r.ids && r.ids.includes(id))+1; return {id,pos};
 }
 async function fillOnlineBoard(el, me){ if(!net.on || !el) return; el.innerHTML='<p style="color:#5a6475;font-size:.9rem">Đang tải bảng xếp hạng chung của lớp...</p>'; const b=await net.topScores(); if(!el.isConnected) return; el.innerHTML = b ? `<p style="margin:0;font-weight:600">🌐 Bảng xếp hạng chung cả lớp</p>${boardHTML(me,b)}<p style="margin:0;font-weight:600;font-size:.9rem;color:#5a6475">Trên máy này</p>` : '<p style="color:#c81e3a;font-size:.9rem">Không tải được bảng xếp hạng chung.</p>'; }
 function showBoard(back){
